@@ -22,6 +22,8 @@ import com.facebook.presto.spi.Node;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.StandardErrorCode;
 import com.facebook.presto.split.RemoteSplit;
+import com.facebook.presto.sql.planner.PartitionFunctionBinding;
+import com.facebook.presto.sql.planner.PartitionFunctionHandle;
 import com.facebook.presto.sql.planner.PlanFragment;
 import com.facebook.presto.sql.planner.plan.PlanFragmentId;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
@@ -40,6 +42,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -47,7 +50,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.facebook.presto.OutputBuffers.BufferType.RANDOM;
+import static com.facebook.presto.OutputBuffers.BufferType.SHARED;
 import static com.facebook.presto.OutputBuffers.createInitialEmptyOutputBuffers;
+import static com.facebook.presto.sql.planner.PartitionFunctionHandle.ROUND_ROBIN;
 import static com.facebook.presto.util.ImmutableCollectors.toImmutableList;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -76,7 +82,7 @@ public final class SqlStageExecution
     private final Set<PlanNodeId> completeSources = newConcurrentHashSet();
     private final Set<PlanFragmentId> completeSourceFragments = newConcurrentHashSet();
 
-    private final AtomicReference<OutputBuffers> outputBuffers = new AtomicReference<>(createInitialEmptyOutputBuffers());
+    private final AtomicReference<OutputBuffers> outputBuffers;
 
     public SqlStageExecution(
             StageId stageId,
@@ -110,6 +116,9 @@ public final class SqlStageExecution
             }
         }
         this.exchangeSources = fragmentToExchangeSource.build();
+
+        Optional<PartitionFunctionHandle> partitionFunction = stateMachine.getFragment().getPartitionFunction().map(PartitionFunctionBinding::getFunctionHandle);
+        outputBuffers = new AtomicReference<>(createInitialEmptyOutputBuffers(partitionFunction.equals(Optional.of(ROUND_ROBIN)) ? RANDOM : SHARED));
     }
 
     public StageId getStageId()

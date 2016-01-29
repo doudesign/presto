@@ -21,6 +21,7 @@ import org.testng.annotations.Test;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.facebook.presto.sql.planner.PartitionFunctionHandle.HASH;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
@@ -36,7 +37,7 @@ public class TestPartitionedOutputBufferManager
     {
         AtomicReference<OutputBuffers> outputBufferTarget = new AtomicReference<>();
 
-        PartitionedOutputBufferManager hashOutputBufferManager = new PartitionedOutputBufferManager(outputBufferTarget::set);
+        PartitionedOutputBufferManager hashOutputBufferManager = new PartitionedOutputBufferManager(HASH, outputBufferTarget::set);
 
         // add buffers, which does not cause output buffer to be set
         assertNull(outputBufferTarget.get());

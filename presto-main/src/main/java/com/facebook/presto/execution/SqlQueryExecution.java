@@ -33,6 +33,8 @@ import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.DistributedExecutionPlanner;
 import com.facebook.presto.sql.planner.InputExtractor;
 import com.facebook.presto.sql.planner.LogicalPlanner;
+import com.facebook.presto.sql.planner.PartitionFunctionBinding;
+import com.facebook.presto.sql.planner.PartitionFunctionHandle;
 import com.facebook.presto.sql.planner.Plan;
 import com.facebook.presto.sql.planner.PlanFragmenter;
 import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
@@ -57,8 +59,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.facebook.presto.OutputBuffers.BROADCAST_PARTITION_ID;
+import static com.facebook.presto.OutputBuffers.BufferType.RANDOM;
+import static com.facebook.presto.OutputBuffers.BufferType.SHARED;
 import static com.facebook.presto.OutputBuffers.createInitialEmptyOutputBuffers;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.facebook.presto.sql.planner.PartitionFunctionHandle.ROUND_ROBIN;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
@@ -66,9 +71,7 @@ import static java.util.Objects.requireNonNull;
 public final class SqlQueryExecution
         implements QueryExecution
 {
-    private static final OutputBuffers ROOT_OUTPUT_BUFFERS = createInitialEmptyOutputBuffers()
-            .withBuffer(new TaskId("output", "buffer", "id"), BROADCAST_PARTITION_ID)
-            .withNoMoreBufferIds();
+    private static final TaskId OUTPUT_BUFFER_ID = new TaskId("output", "buffer", "id");
 
     private final QueryStateMachine stateMachine;
 
@@ -290,6 +293,11 @@ public final class SqlQueryExecution
         // record field names
         stateMachine.setOutputFieldNames(outputStageExecutionPlan.getFieldNames());
 
+        Optional<PartitionFunctionHandle> partitionFunction = subplan.getFragment().getPartitionFunction().map(PartitionFunctionBinding::getFunctionHandle);
+        OutputBuffers rootOutputBuffers = createInitialEmptyOutputBuffers(partitionFunction.equals(Optional.of(ROUND_ROBIN)) ? RANDOM : SHARED)
+                .withBuffer(OUTPUT_BUFFER_ID, BROADCAST_PARTITION_ID)
+                .withNoMoreBufferIds();
+
         // build the stage execution objects (this doesn't schedule execution)
         SqlQueryScheduler scheduler = new SqlQueryScheduler(
                 stateMachine,
@@ -300,7 +308,7 @@ public final class SqlQueryExecution
                 stateMachine.getSession(),
                 scheduleSplitBatchSize,
                 queryExecutor,
-                ROOT_OUTPUT_BUFFERS,
+                rootOutputBuffers,
                 nodeTaskMap,
                 executionPolicy);
 

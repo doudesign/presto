@@ -101,6 +101,7 @@ public class LazyBuffer
                 BufferState state = this.state.get();
 
                 return new SharedBufferInfo(
+                        "UNKNOWN",
                         state,
                         state.canAddBuffers(),
                         state.canAddPages(),
@@ -121,7 +122,14 @@ public class LazyBuffer
         OutputBuffer outputBuffer;
         synchronized (this) {
             if (delegate == null) {
-                delegate = new SharedBuffer(taskInstanceId, state, memoryManager);
+                switch (newOutputBuffers.getType()) {
+                    case SHARED:
+                        delegate = new SharedBuffer(taskInstanceId, state, memoryManager);
+                        break;
+                    case RANDOM:
+                        delegate = new RandomBuffer(taskInstanceId, state, memoryManager);
+                        break;
+                }
 
                 delegate.setOutputBuffers(newOutputBuffers);
 
@@ -252,7 +260,7 @@ public class LazyBuffer
             }
             outputBuffer = delegate;
         }
-        outputBuffer.destroy();
+        outputBuffer.fail();
     }
 
     private static class PendingRead

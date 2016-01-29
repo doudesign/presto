@@ -65,6 +65,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import static com.facebook.presto.OutputBuffers.BufferType.SHARED;
 import static com.facebook.presto.OutputBuffers.createInitialEmptyOutputBuffers;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
 import static com.facebook.presto.spi.StandardErrorCode.NO_NODES_AVAILABLE;
@@ -462,7 +463,7 @@ public class TestSourcePartitionedScheduler
                 nodeTaskMap,
                 executor);
 
-        stage.setOutputBuffers(createInitialEmptyOutputBuffers()
+        stage.setOutputBuffers(createInitialEmptyOutputBuffers(SHARED)
                 .withBuffer(OUT, 0)
                 .withNoMoreBufferIds());
 

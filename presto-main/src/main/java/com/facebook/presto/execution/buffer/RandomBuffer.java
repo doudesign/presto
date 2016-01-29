@@ -31,19 +31,21 @@ import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static com.facebook.presto.OutputBuffers.BROADCAST_PARTITION_ID;
-import static com.facebook.presto.OutputBuffers.BufferType.SHARED;
+import static com.facebook.presto.OutputBuffers.BufferType.RANDOM;
 import static com.facebook.presto.OutputBuffers.createInitialEmptyOutputBuffers;
 import static com.facebook.presto.execution.buffer.BufferResult.emptyResults;
 import static com.facebook.presto.execution.buffer.BufferState.FAILED;
@@ -53,27 +55,27 @@ import static com.facebook.presto.execution.buffer.BufferState.NO_MORE_BUFFERS;
 import static com.facebook.presto.execution.buffer.BufferState.NO_MORE_PAGES;
 import static com.facebook.presto.execution.buffer.BufferState.OPEN;
 import static com.facebook.presto.execution.buffer.BufferState.TERMINAL_BUFFER_STATES;
+import static com.facebook.presto.execution.buffer.PageSplitterUtil.splitPage;
+import static com.facebook.presto.spi.block.PageBuilderStatus.DEFAULT_MAX_PAGE_SIZE_IN_BYTES;
 import static com.facebook.presto.util.ImmutableCollectors.toImmutableSet;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Verify.verify;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 
-@ThreadSafe
-public class SharedBuffer
+public class RandomBuffer
         implements OutputBuffer
 {
     private final SettableFuture<OutputBuffers> finalOutputBuffers = SettableFuture.create();
 
     @GuardedBy("this")
-    private OutputBuffers outputBuffers = createInitialEmptyOutputBuffers(SHARED);
+    private OutputBuffers outputBuffers = createInitialEmptyOutputBuffers(RANDOM);
     @GuardedBy("this")
-    private final Map<Integer, PartitionBuffer> partitionBuffers = new ConcurrentHashMap<>();
-    @GuardedBy("this")
-    private final Map<Integer, Set<NamedBuffer>> partitionToNamedBuffer = new ConcurrentHashMap<>();
+    private final MasterBuffer masterBuffer;
     @GuardedBy("this")
     private final ConcurrentMap<TaskId, NamedBuffer> namedBuffers = new ConcurrentHashMap<>();
     @GuardedBy("this")
@@ -85,30 +87,24 @@ public class SharedBuffer
     @GuardedBy("this")
     private final List<GetBufferResult> stateChangeListeners = new ArrayList<>();
 
-    private final SharedBufferMemoryManager memoryManager;
-
-    public SharedBuffer(TaskId taskId, String taskInstanceId, Executor executor, DataSize maxBufferSize)
+    public RandomBuffer(String taskInstanceId, StateMachine<BufferState> state, SharedBufferMemoryManager memoryManager)
     {
-        this(taskId, taskInstanceId, executor, maxBufferSize, deltaMemory -> { });
+        this.taskInstanceId = requireNonNull(taskInstanceId, "taskInstanceId is null");
+        this.state = requireNonNull(state, "state is null");
+        this.masterBuffer = new MasterBuffer(requireNonNull(memoryManager, "memoryManager is null"));
     }
 
-    public SharedBuffer(TaskId taskId, String taskInstanceId, Executor executor, DataSize maxBufferSize, SystemMemoryUsageListener systemMemoryUsageListener)
+    public RandomBuffer(TaskId taskId, String taskInstanceId, Executor executor, DataSize maxBufferSize, SystemMemoryUsageListener systemMemoryUsageListener)
     {
         requireNonNull(taskId, "taskId is null");
         requireNonNull(executor, "executor is null");
         this.taskInstanceId = requireNonNull(taskInstanceId, "taskInstanceId is null");
-        state = new StateMachine<>(taskId + "-buffer", executor, OPEN, TERMINAL_BUFFER_STATES);
+        this.state = new StateMachine<>(taskId + "-buffer", executor, OPEN, TERMINAL_BUFFER_STATES);
+
         requireNonNull(maxBufferSize, "maxBufferSize is null");
         checkArgument(maxBufferSize.toBytes() > 0, "maxBufferSize must be at least 1");
         requireNonNull(systemMemoryUsageListener, "systemMemoryUsageListener is null");
-        this.memoryManager = new SharedBufferMemoryManager(maxBufferSize.toBytes(), systemMemoryUsageListener);
-    }
-
-    public SharedBuffer(String taskInstanceId, StateMachine<BufferState> state, SharedBufferMemoryManager memoryManager)
-    {
-        this.taskInstanceId = requireNonNull(taskInstanceId, "taskInstanceId is null");
-        this.state = requireNonNull(state, "state is null");
-        this.memoryManager = requireNonNull(memoryManager, "memoryManager is null");
+        this.masterBuffer = new MasterBuffer(new SharedBufferMemoryManager(maxBufferSize.toBytes(), systemMemoryUsageListener));
     }
 
     @Override
@@ -127,7 +123,7 @@ public class SharedBuffer
     public SharedBufferInfo getInfo()
     {
         //
-        // NOTE: this code must be lock free to we are not hanging state machine updates
+        // NOTE: this code must be lock free so we do not hang for state machine updates
         //
         checkDoesNotHoldLock();
         BufferState state = this.state.get();
@@ -136,18 +132,23 @@ public class SharedBuffer
             infos.add(namedBuffer.getInfo());
         }
 
-        long totalBufferedBytes = partitionBuffers.values().stream().mapToLong(PartitionBuffer::getBufferedBytes).sum();
-        long totalBufferedPages = partitionBuffers.values().stream().mapToLong(PartitionBuffer::getBufferedPageCount).sum();
-        long totalQueuedPages = partitionBuffers.values().stream().mapToLong(PartitionBuffer::getQueuedPageCount).sum();
-        long totalPagesSent = partitionBuffers.values().stream().mapToLong(PartitionBuffer::getPageCount).sum();
-
-        return new SharedBufferInfo("SHARED", state, state.canAddBuffers(), state.canAddPages(), totalBufferedBytes, totalBufferedPages, totalQueuedPages, totalPagesSent, infos.build());
+        return new SharedBufferInfo(
+                "RANDOM",
+                state,
+                state.canAddBuffers(),
+                state.canAddPages(),
+                masterBuffer.getBufferedBytes(),
+                masterBuffer.getBufferedPageCount(),
+                masterBuffer.getQueuedPageCount(),
+                masterBuffer.getPageCount(),
+                infos.build());
     }
 
     @Override
     public synchronized void setOutputBuffers(OutputBuffers newOutputBuffers)
     {
         requireNonNull(newOutputBuffers, "newOutputBuffers is null");
+
         // ignore buffers added after query finishes, which can happen when a query is canceled
         // also ignore old versions, which is normal
         if (state.get().isTerminal() || outputBuffers.getVersion() >= newOutputBuffers.getVersion()) {
@@ -164,18 +165,13 @@ public class SharedBuffer
             if (!namedBuffers.containsKey(bufferId)) {
                 checkState(state.get().canAddBuffers(), "Cannot add buffers to %s", getClass().getSimpleName());
 
-                int partition = entry.getValue();
-
-                PartitionBuffer partitionBuffer = createOrGetPartitionBuffer(partition);
-                NamedBuffer namedBuffer = new NamedBuffer(bufferId, partitionBuffer);
+                NamedBuffer namedBuffer = new NamedBuffer(bufferId, masterBuffer);
 
                 // the buffer may have been aborted before the creation message was received
                 if (abortedBuffers.contains(bufferId)) {
                     namedBuffer.abort();
                 }
                 namedBuffers.put(bufferId, namedBuffer);
-                Set<NamedBuffer> namedBuffers = partitionToNamedBuffer.computeIfAbsent(partition, k -> new HashSet<>());
-                namedBuffers.add(namedBuffer);
             }
         }
 
@@ -189,20 +185,8 @@ public class SharedBuffer
         updateState();
     }
 
-    private PartitionBuffer createOrGetPartitionBuffer(int partition)
-    {
-        checkHoldsLock();
-        return partitionBuffers.computeIfAbsent(partition, k -> new PartitionBuffer(partition, memoryManager));
-    }
-
     @Override
     public synchronized ListenableFuture<?> enqueue(Page page)
-    {
-        return enqueue(BROADCAST_PARTITION_ID, page);
-    }
-
-    @Override
-    public synchronized ListenableFuture<?> enqueue(int partition, Page page)
     {
         requireNonNull(page, "page is null");
 
@@ -212,11 +196,16 @@ public class SharedBuffer
             return immediateFuture(true);
         }
 
-        PartitionBuffer partitionBuffer = createOrGetPartitionBuffer(partition);
-        ListenableFuture<?> result = partitionBuffer.enqueuePage(page);
+        ListenableFuture<?> result = masterBuffer.enqueuePage(page);
         processPendingReads();
         updateState();
         return result;
+    }
+
+    @Override
+    public synchronized ListenableFuture<?> enqueue(int partition, Page page)
+    {
+        throw new UnsupportedOperationException("RandomBuffer does not support partitions");
     }
 
     @Override
@@ -272,9 +261,9 @@ public class SharedBuffer
 
         state.set(FINISHED);
 
-        partitionBuffers.values().forEach(PartitionBuffer::destroy);
+        masterBuffer.destroy();
         // free readers
-        namedBuffers.values().forEach(SharedBuffer.NamedBuffer::abort);
+        namedBuffers.values().forEach(NamedBuffer::abort);
         processPendingReads();
     }
 
@@ -287,7 +276,7 @@ public class SharedBuffer
         }
 
         state.set(FAILED);
-        partitionBuffers.values().forEach(PartitionBuffer::destroy);
+        masterBuffer.destroy();
 
         // DO NOT free readers
     }
@@ -322,21 +311,7 @@ public class SharedBuffer
 
             if (!state.canAddPages()) {
                 // discard queued pages (not officially in the buffer)
-                partitionBuffers.values().forEach(PartitionBuffer::clearQueue);
-            }
-
-            // advanced master queue
-            if (!state.canAddBuffers() && !namedBuffers.isEmpty()) {
-                for (Map.Entry<Integer, Set<NamedBuffer>> entry : partitionToNamedBuffer.entrySet()) {
-                    PartitionBuffer partitionBuffer = partitionBuffers.get(entry.getKey());
-                    long newMasterSequenceId = entry.getValue().stream()
-                            .mapToLong(NamedBuffer::getSequenceId)
-                            .min()
-                            .getAsLong();
-                    partitionBuffer.advanceSequenceId(newMasterSequenceId);
-                }
-                // this might have freed up space in the buffers, try to dequeue pages
-                partitionBuffers.values().forEach(PartitionBuffer::dequeuePages);
+                masterBuffer.clearQueue();
             }
         }
         finally {
@@ -364,98 +339,6 @@ public class SharedBuffer
     {
         if (Thread.holdsLock(this)) {
             throw new IllegalStateException(format("Thread must NOT hold a lock on the %s", getClass().getSimpleName()));
-        }
-    }
-
-    @ThreadSafe
-    private final class NamedBuffer
-    {
-        private final TaskId bufferId;
-        private final PartitionBuffer partitionBuffer;
-
-        private final AtomicLong sequenceId = new AtomicLong();
-        private final AtomicBoolean finished = new AtomicBoolean();
-
-        private NamedBuffer(TaskId bufferId, PartitionBuffer partitionBuffer)
-        {
-            this.bufferId = requireNonNull(bufferId, "bufferId is null");
-            this.partitionBuffer = requireNonNull(partitionBuffer, "partitionBuffer is null");
-        }
-
-        public BufferInfo getInfo()
-        {
-            //
-            // NOTE: this code must be lock free to we are not hanging state machine updates
-            //
-            checkDoesNotHoldLock();
-
-            long sequenceId = this.sequenceId.get();
-
-            if (finished.get()) {
-                return new BufferInfo(bufferId, true, 0, sequenceId, partitionBuffer.getInfo());
-            }
-
-            int bufferedPages = Math.max(Ints.checkedCast(partitionBuffer.getPageCount() - sequenceId), 0);
-            return new BufferInfo(bufferId, finished.get(), bufferedPages, sequenceId, partitionBuffer.getInfo());
-        }
-
-        public long getSequenceId()
-        {
-            checkHoldsLock();
-
-            return sequenceId.get();
-        }
-
-        public BufferResult getPages(long startingSequenceId, DataSize maxSize)
-        {
-            checkHoldsLock();
-            checkArgument(maxSize.toBytes() > 0, "maxSize must be at least 1 byte");
-
-            long sequenceId = this.sequenceId.get();
-            checkArgument(startingSequenceId >= sequenceId, "startingSequenceId is before the beginning of the buffer");
-
-            // acknowledge previous pages
-            if (startingSequenceId > sequenceId) {
-                this.sequenceId.set(startingSequenceId);
-                sequenceId = startingSequenceId;
-            }
-
-            if (isFinished()) {
-                return emptyResults(taskInstanceId, startingSequenceId, true);
-            }
-
-            List<Page> pages = partitionBuffer.getPages(maxSize, sequenceId);
-
-            // if we can't have any more pages, indicate that the buffer is complete
-            if (pages.isEmpty() && !state.get().canAddPages()) {
-                return emptyResults(taskInstanceId, startingSequenceId, true);
-            }
-
-            return new BufferResult(taskInstanceId, startingSequenceId, startingSequenceId + pages.size(), false, pages);
-        }
-
-        public void abort()
-        {
-            checkHoldsLock();
-
-            finished.set(true);
-            checkFlushComplete();
-        }
-
-        public boolean isFinished()
-        {
-            checkHoldsLock();
-            return finished.get();
-        }
-
-        @Override
-        public String toString()
-        {
-            return toStringHelper(this)
-                    .add("bufferId", bufferId)
-                    .add("sequenceId", sequenceId.get())
-                    .add("finished", finished.get())
-                    .toString();
         }
     }
 
@@ -500,7 +383,7 @@ public class SharedBuffer
                 // this could be a request for a buffer that never existed, but that is ok since the buffer
                 // could have been destroyed before the creation message was received
                 if (state.get() == FINISHED) {
-                    future.complete(emptyResults(taskInstanceId, namedBuffer == null ? 0 : namedBuffer.getSequenceId(), true));
+                    future.complete(emptyResults(taskInstanceId, namedBuffer == null ? 0 : namedBuffer.getCurrentToken(), true));
                     return true;
                 }
 
@@ -510,28 +393,280 @@ public class SharedBuffer
                 }
 
                 // if request is for pages before the current position, just return an empty page
-                if (startingSequenceId < namedBuffer.getSequenceId()) {
+                if (startingSequenceId < namedBuffer.getCurrentToken() - 1) {
                     future.complete(emptyResults(taskInstanceId, startingSequenceId, false));
                     return true;
                 }
 
                 // read pages from the buffer
-                BufferResult bufferResult = namedBuffer.getPages(startingSequenceId, maxSize);
+                Optional<BufferResult> bufferResult = namedBuffer.getPages(startingSequenceId, maxSize);
 
                 // if this was the last page, we're done
                 checkFlushComplete();
 
                 // if we got an empty result, wait for more pages
-                if (bufferResult.isEmpty() && !bufferResult.isBufferComplete()) {
+                if (!bufferResult.isPresent()) {
                     return false;
                 }
 
-                future.complete(bufferResult);
+                future.complete(bufferResult.get());
             }
             catch (Throwable throwable) {
                 future.completeExceptionally(throwable);
             }
             return true;
+        }
+    }
+
+    @ThreadSafe
+    private final class NamedBuffer
+    {
+        private final TaskId bufferId;
+        private final MasterBuffer masterBuffer;
+
+        private final AtomicLong currentToken = new AtomicLong();
+        private final AtomicBoolean finished = new AtomicBoolean();
+
+        private List<Page> lastPages = ImmutableList.of();
+
+        private NamedBuffer(TaskId bufferId, MasterBuffer masterBuffer)
+        {
+            this.bufferId = requireNonNull(bufferId, "bufferId is null");
+            this.masterBuffer = requireNonNull(masterBuffer, "partitionBuffer is null");
+        }
+
+        public BufferInfo getInfo()
+        {
+            //
+            // NOTE: this code must be lock free to we are not hanging state machine updates
+            //
+            checkDoesNotHoldLock();
+
+            long sequenceId = this.currentToken.get();
+
+            if (finished.get()) {
+                return new BufferInfo(bufferId, true, 0, sequenceId, masterBuffer.getInfo());
+            }
+
+            int bufferedPages = Math.max(Ints.checkedCast(masterBuffer.getPageCount() - sequenceId), 0);
+            return new BufferInfo(bufferId, finished.get(), bufferedPages, sequenceId, masterBuffer.getInfo());
+        }
+
+        public long getCurrentToken()
+        {
+            checkHoldsLock();
+
+            return currentToken.get();
+        }
+
+        public Optional<BufferResult> getPages(long token, DataSize maxSize)
+        {
+            checkHoldsLock();
+            checkArgument(maxSize.toBytes() > 0, "maxSize must be at least 1 byte");
+
+            // is this a request for the previous pages
+            if (token == currentToken.get() - 1) {
+                return Optional.of(new BufferResult(taskInstanceId, token, token + 1, false, lastPages));
+            }
+
+            checkArgument(token == currentToken.get(), "Invalid token");
+
+            if (isFinished()) {
+                lastPages = ImmutableList.of();
+                return Optional.of(emptyResults(taskInstanceId, token, true));
+            }
+
+            List<Page> pages = masterBuffer.removePages(maxSize);
+
+            if (pages.isEmpty()) {
+                if (state.get().canAddPages()) {
+                    // since there is no data, don't move the counter forward since this would require a client round trip
+                    return Optional.empty();
+                }
+
+                // if we can't have any more pages, indicate that the buffer is complete
+                lastPages = ImmutableList.of();
+                return Optional.of(emptyResults(taskInstanceId, token, true));
+            }
+
+            // we have data, move the counter forward
+            currentToken.incrementAndGet();
+            lastPages = pages;
+            return Optional.of(new BufferResult(taskInstanceId, token, token + 1, false, lastPages));
+        }
+
+        public void abort()
+        {
+            checkHoldsLock();
+
+            finished.set(true);
+            checkFlushComplete();
+        }
+
+        public boolean isFinished()
+        {
+            checkHoldsLock();
+            return finished.get();
+        }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this)
+                    .add("bufferId", bufferId)
+                    .add("sequenceId", currentToken.get())
+                    .add("finished", finished.get())
+                    .toString();
+        }
+    }
+
+    private static class MasterBuffer
+    {
+        private final LinkedList<Page> masterBuffer = new LinkedList<>();
+        private final BlockingQueue<QueuedPage> queuedPages = new LinkedBlockingQueue<>();
+
+        // Total number of pages added to this buffer
+        private final AtomicLong pagesAdded = new AtomicLong();
+
+        // Bytes in this buffer
+        private final AtomicLong bufferedBytes = new AtomicLong();
+
+        private final SharedBufferMemoryManager memoryManager;
+
+        public MasterBuffer(SharedBufferMemoryManager memoryManager)
+        {
+            this.memoryManager = requireNonNull(memoryManager, "memoryManager is null");
+        }
+
+        public synchronized ListenableFuture<?> enqueuePage(Page page)
+        {
+            if (!memoryManager.isFull()) {
+                addToMasterBuffer(page);
+                return immediateFuture(true);
+            }
+            else {
+                QueuedPage queuedPage = new QueuedPage(page);
+                queuedPages.add(queuedPage);
+                return queuedPage.getFuture();
+            }
+        }
+
+        private synchronized void addToMasterBuffer(Page page)
+        {
+            long bytesAdded = 0;
+            List<Page> pages = splitPage(page, DEFAULT_MAX_PAGE_SIZE_IN_BYTES);
+            masterBuffer.addAll(pages);
+            pagesAdded.addAndGet(pages.size());
+            for (Page p : pages) {
+                bytesAdded += p.getSizeInBytes();
+            }
+            updateMemoryUsage(bytesAdded);
+        }
+
+        /**
+         * @return at least one page if we have pages in buffer, empty list otherwise
+         */
+        public synchronized List<Page> removePages(DataSize maxSize)
+        {
+            long maxBytes = maxSize.toBytes();
+            List<Page> pages = new ArrayList<>();
+            long bytesRemoved = 0;
+
+            while (true) {
+                Page page = masterBuffer.peek();
+                if (page == null) {
+                    break;
+                }
+                bytesRemoved += page.getSizeInBytes();
+                // break (and don't add) if this page would exceed the limit
+                if (!pages.isEmpty() && bytesRemoved > maxBytes) {
+                    break;
+                }
+                // this should not happen since we have a lock
+                checkState(masterBuffer.poll() == page, "Master buffer corrupted");
+                pages.add(page);
+            }
+
+            updateMemoryUsage(-bytesRemoved);
+
+            // refill buffer from queued pages
+            while (!queuedPages.isEmpty() && !memoryManager.isFull()) {
+                QueuedPage queuedPage = queuedPages.remove();
+                addToMasterBuffer(queuedPage.getPage());
+                queuedPage.getFuture().set(null);
+            }
+
+            return  ImmutableList.copyOf(pages);
+        }
+
+        public synchronized void destroy()
+        {
+            // clear the buffer
+            masterBuffer.clear();
+            updateMemoryUsage(-bufferedBytes.get());
+            clearQueue();
+        }
+
+        public synchronized void clearQueue()
+        {
+            for (QueuedPage queuedPage : queuedPages) {
+                queuedPage.getFuture().set(null);
+            }
+            queuedPages.clear();
+        }
+
+        private void updateMemoryUsage(long bytesAdded)
+        {
+            bufferedBytes.addAndGet(bytesAdded);
+            memoryManager.updateMemoryUsage(bytesAdded);
+            verify(bufferedBytes.get() >= 0);
+        }
+
+        public long getPageCount()
+        {
+            return pagesAdded.get();
+        }
+
+        public long getBufferedBytes()
+        {
+            return bufferedBytes.get();
+        }
+
+        public long getBufferedPageCount()
+        {
+            return masterBuffer.size();
+        }
+
+        public long getQueuedPageCount()
+        {
+            return queuedPages.size();
+        }
+
+        public PageBufferInfo getInfo()
+        {
+            return new PageBufferInfo(0, getBufferedPageCount(), getQueuedPageCount(), getBufferedBytes(), pagesAdded.get());
+        }
+
+        @Immutable
+        private static final class QueuedPage
+        {
+            private final Page page;
+            private final SettableFuture<?> future = SettableFuture.create();
+
+            QueuedPage(Page page)
+            {
+                this.page = page;
+            }
+
+            public Page getPage()
+            {
+                return page;
+            }
+
+            public SettableFuture<?> getFuture()
+            {
+                return future;
+            }
         }
     }
 }

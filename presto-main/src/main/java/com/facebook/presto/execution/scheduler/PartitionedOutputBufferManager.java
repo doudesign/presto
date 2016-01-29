@@ -15,6 +15,7 @@ package com.facebook.presto.execution.scheduler;
 
 import com.facebook.presto.OutputBuffers;
 import com.facebook.presto.execution.TaskId;
+import com.facebook.presto.sql.planner.PartitionFunctionHandle;
 
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
@@ -23,7 +24,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 
+import static com.facebook.presto.OutputBuffers.BufferType.RANDOM;
+import static com.facebook.presto.OutputBuffers.BufferType.SHARED;
 import static com.facebook.presto.OutputBuffers.createInitialEmptyOutputBuffers;
+import static com.facebook.presto.sql.planner.PartitionFunctionHandle.ROUND_ROBIN;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
@@ -31,14 +35,16 @@ import static java.util.Objects.requireNonNull;
 public class PartitionedOutputBufferManager
         implements OutputBufferManager
 {
+    private final PartitionFunctionHandle functionHandle;
     private final Consumer<OutputBuffers> outputBufferTarget;
     @GuardedBy("this")
     private final Map<TaskId, Integer> partitions = new LinkedHashMap<>();
     @GuardedBy("this")
     private boolean noMoreBufferIds;
 
-    public PartitionedOutputBufferManager(Consumer<OutputBuffers> outputBufferTarget)
+    public PartitionedOutputBufferManager(PartitionFunctionHandle functionHandle, Consumer<OutputBuffers> outputBufferTarget)
     {
+        this.functionHandle = requireNonNull(functionHandle, "functionHandle is null");
         this.outputBufferTarget = requireNonNull(outputBufferTarget, "outputBufferTarget is null");
     }
 
@@ -66,7 +72,7 @@ public class PartitionedOutputBufferManager
             noMoreBufferIds = true;
         }
 
-        OutputBuffers outputBuffers = createInitialEmptyOutputBuffers()
+        OutputBuffers outputBuffers = createInitialEmptyOutputBuffers(functionHandle.equals(ROUND_ROBIN) ? RANDOM : SHARED)
                 .withBuffers(partitions)
                 .withNoMoreBufferIds();
 

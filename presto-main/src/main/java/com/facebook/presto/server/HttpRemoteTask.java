@@ -225,7 +225,7 @@ public final class HttpRemoteTask
                     TaskState.PLANNED,
                     location,
                     DateTime.now(),
-                    new SharedBufferInfo(BufferState.OPEN, true, true, 0, 0, 0, 0, bufferStates),
+                    new SharedBufferInfo("UNKNOWN", BufferState.OPEN, true, true, 0, 0, 0, 0, bufferStates),
                     ImmutableSet.<PlanNodeId>of(),
                     taskStats,
                     ImmutableList.<ExecutionFailureInfo>of()));
