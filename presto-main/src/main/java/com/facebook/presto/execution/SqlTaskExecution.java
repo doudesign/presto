@@ -16,9 +16,10 @@ package com.facebook.presto.execution;
 import com.facebook.presto.ScheduledSplit;
 import com.facebook.presto.TaskSource;
 import com.facebook.presto.event.query.QueryMonitor;
-import com.facebook.presto.execution.SharedBuffer.BufferState;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.execution.TaskExecutor.TaskHandle;
+import com.facebook.presto.execution.buffer.BufferState;
+import com.facebook.presto.execution.buffer.SharedBuffer;
 import com.facebook.presto.operator.Driver;
 import com.facebook.presto.operator.DriverContext;
 import com.facebook.presto.operator.DriverFactory;
@@ -163,7 +164,7 @@ public class SqlTaskExecution
                 throw Throwables.propagate(e);
             }
 
-            // index driver factories
+            // index driver factories                                                                                                                                                                                                                  π
             DriverSplitRunnerFactory partitionedDriverFactory = null;
             ImmutableList.Builder<DriverSplitRunnerFactory> unpartitionedDriverFactories = ImmutableList.builder();
             for (DriverFactory driverFactory : driverFactories) {
