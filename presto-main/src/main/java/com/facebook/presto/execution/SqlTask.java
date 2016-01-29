@@ -18,6 +18,7 @@ import com.facebook.presto.Session;
 import com.facebook.presto.TaskSource;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.execution.buffer.BufferResult;
+import com.facebook.presto.execution.buffer.OutputBuffer;
 import com.facebook.presto.execution.buffer.SharedBuffer;
 import com.facebook.presto.memory.QueryContext;
 import com.facebook.presto.operator.TaskContext;
@@ -56,7 +57,7 @@ public class SqlTask
     private final String taskInstanceId;
     private final URI location;
     private final TaskStateMachine taskStateMachine;
-    private final SharedBuffer sharedBuffer;
+    private final OutputBuffer outputBuffer;
     private final QueryContext queryContext;
 
     private final SqlTaskExecutionFactory sqlTaskExecutionFactory;
@@ -84,7 +85,7 @@ public class SqlTask
         requireNonNull(onDone, "onDone is null");
         requireNonNull(maxBufferSize, "maxBufferSize is null");
 
-        sharedBuffer = new SharedBuffer(taskId, taskInstanceId, taskNotificationExecutor, maxBufferSize, new UpdateSystemMemory(queryContext));
+        outputBuffer = new SharedBuffer(taskId, taskInstanceId, taskNotificationExecutor, maxBufferSize, new UpdateSystemMemory(queryContext));
         taskStateMachine = new TaskStateMachine(taskId, taskNotificationExecutor);
         taskStateMachine.addStateChangeListener(new StateChangeListener<TaskState>()
         {
@@ -112,10 +113,10 @@ public class SqlTask
                 if (newState == TaskState.FAILED || newState == TaskState.ABORTED) {
                     // don't close buffers for a failed query
                     // closed buffers signal to upstream tasks that everything finished cleanly
-                    sharedBuffer.fail();
+                    outputBuffer.fail();
                 }
                 else {
-                    sharedBuffer.destroy();
+                    outputBuffer.destroy();
                 }
 
                 try {
@@ -213,7 +214,7 @@ public class SqlTask
                 state,
                 location,
                 lastHeartbeat.get(),
-                sharedBuffer.getInfo(),
+                outputBuffer.getInfo(),
                 noMoreSplits,
                 taskStats,
                 failures);
@@ -248,14 +249,14 @@ public class SqlTask
                 }
                 taskExecution = taskHolder.getTaskExecution();
                 if (taskExecution == null) {
-                    taskExecution = sqlTaskExecutionFactory.create(session, queryContext, taskStateMachine, sharedBuffer, fragment, sources);
+                    taskExecution = sqlTaskExecutionFactory.create(session, queryContext, taskStateMachine, outputBuffer, fragment, sources);
                     taskHolderReference.compareAndSet(taskHolder, new TaskHolder(taskExecution));
                 }
             }
 
             if (taskExecution != null) {
                 // addSources checks for task completion, so update the buffers first and the task might complete earlier
-                sharedBuffer.setOutputBuffers(outputBuffers);
+                outputBuffer.setOutputBuffers(outputBuffers);
                 taskExecution.addSources(sources);
             }
         }
@@ -275,7 +276,7 @@ public class SqlTask
         requireNonNull(outputName, "outputName is null");
         checkArgument(maxSize.toBytes() > 0, "maxSize must be at least 1 byte");
 
-        return sharedBuffer.get(outputName, startingSequenceId, maxSize);
+        return outputBuffer.get(outputName, startingSequenceId, maxSize);
     }
 
     public TaskInfo abortTaskResults(TaskId outputId)
@@ -283,7 +284,7 @@ public class SqlTask
         requireNonNull(outputId, "outputId is null");
 
         log.debug("Aborting task %s output %s", taskId, outputId);
-        sharedBuffer.abort(outputId);
+        outputBuffer.abort(outputId);
 
         return getTaskInfo();
     }

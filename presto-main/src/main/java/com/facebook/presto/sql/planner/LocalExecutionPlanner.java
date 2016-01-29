@@ -16,7 +16,7 @@ package com.facebook.presto.sql.planner;
 import com.facebook.presto.Session;
 import com.facebook.presto.SystemSessionProperties;
 import com.facebook.presto.execution.TaskManagerConfig;
-import com.facebook.presto.execution.buffer.SharedBuffer;
+import com.facebook.presto.execution.buffer.OutputBuffer;
 import com.facebook.presto.index.IndexManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.Signature;
@@ -254,12 +254,12 @@ public class LocalExecutionPlanner
             List<Symbol> outputLayout,
             Map<Symbol, Type> types,
             Optional<PartitionFunctionBinding> partitionFunctionBinding,
-            SharedBuffer sharedBuffer,
+            OutputBuffer outputBuffer,
             boolean singleNode,
             boolean allowLocalParallel)
     {
         if (!partitionFunctionBinding.isPresent()) {
-            return plan(session, plan, outputLayout, types, new TaskOutputFactory(sharedBuffer), singleNode, allowLocalParallel);
+            return plan(session, plan, outputLayout, types, new TaskOutputFactory(outputBuffer), singleNode, allowLocalParallel);
         }
 
         PartitionFunctionBinding functionBinding = partitionFunctionBinding.get();
@@ -293,7 +293,7 @@ public class LocalExecutionPlanner
                 plan,
                 outputLayout,
                 types,
-                new PartitionedOutputFactory(partitionFunction, partitionChannels, nullChannel, sharedBuffer),
+                new PartitionedOutputFactory(partitionFunction, partitionChannels, nullChannel, outputBuffer),
                 singleNode,
                 allowLocalParallel);
     }
