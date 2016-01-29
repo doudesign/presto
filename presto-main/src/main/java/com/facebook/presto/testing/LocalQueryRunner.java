@@ -528,7 +528,7 @@ public class LocalQueryRunner
             System.out.println(PlanPrinter.textLogicalPlan(plan.getRoot(), plan.getTypes(), metadata, session));
         }
 
-        SubPlan subplan = new PlanFragmenter().createSubPlans(plan);
+        SubPlan subplan = new PlanFragmenter().createSubPlans(plan, true);
         if (!subplan.getChildren().isEmpty()) {
             throw new AssertionError("Expected subplan to have no children");
         }

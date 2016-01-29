@@ -47,9 +47,17 @@ public class PlanFragmenter
 {
     public SubPlan createSubPlans(Plan plan)
     {
+        return createSubPlans(plan, false);
+    }
+
+    public SubPlan createSubPlans(Plan plan, boolean forceSingleNodeOutput)
+    {
         Fragmenter fragmenter = new Fragmenter(plan.getSymbolAllocator().getTypes());
 
         FragmentProperties properties = new FragmentProperties();
+        if (forceSingleNodeOutput) {
+            properties.setSingleNodeDistribution();
+        }
         PlanNode root = SimplePlanRewriter.rewriteWith(fragmenter, plan.getRoot(), properties);
 
         SubPlan result = fragmenter.buildRootFragment(root, properties);
@@ -101,7 +109,6 @@ public class PlanFragmenter
         public PlanNode visitOutput(OutputNode node, RewriteContext<FragmentProperties> context)
         {
             context.get()
-                    .setSingleNodeDistribution() // TODO: add support for distributed output
                     .setOutputLayout(node.getOutputSymbols())
                     .setUnpartitionedOutput();
 
