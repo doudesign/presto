@@ -20,7 +20,7 @@ import org.testng.annotations.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
 
-import static com.facebook.presto.OutputBuffers.INITIAL_EMPTY_OUTPUT_BUFFERS;
+import static com.facebook.presto.OutputBuffers.createInitialEmptyOutputBuffers;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNull;
 
@@ -37,7 +37,7 @@ public class TestBroadcastOutputBufferManager
         assertNull(outputBufferTarget.get());
 
         hashOutputBufferManager.addOutputBuffer(new TaskId(STAGE_ID, "0"), 0);
-        OutputBuffers expectedOutputBuffers = INITIAL_EMPTY_OUTPUT_BUFFERS.withBuffer(new TaskId(STAGE_ID, "0"), 0);
+        OutputBuffers expectedOutputBuffers = createInitialEmptyOutputBuffers().withBuffer(new TaskId(STAGE_ID, "0"), 0);
         assertEquals(outputBufferTarget.get(), expectedOutputBuffers);
 
         hashOutputBufferManager.addOutputBuffer(new TaskId(STAGE_ID, "1"), 0);
