@@ -185,8 +185,8 @@ public final class SystemSessionProperties
                 booleanSessionProperty(
                         PARALLEL_OUTPUT,
                         "Create multiple tasks in the output stage",
-                        true,
-                        false));
+                        false,
+                        true));
     }
 
     public List<PropertyMetadata<?>> getSessionProperties()
