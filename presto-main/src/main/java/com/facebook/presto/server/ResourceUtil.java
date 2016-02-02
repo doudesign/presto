@@ -226,7 +226,7 @@ final class ResourceUtil
         }
     }
 
-    private static WebApplicationException badRequest(String message)
+    public static WebApplicationException badRequest(String message)
     {
         throw new WebApplicationException(Response
                 .status(Status.BAD_REQUEST)
@@ -235,7 +235,7 @@ final class ResourceUtil
                 .build());
     }
 
-    private static String trimEmptyToNull(String value)
+    public static String trimEmptyToNull(String value)
     {
         return emptyToNull(nullToEmpty(value).trim());
     }

@@ -535,7 +535,7 @@ public class StatementResource
             return uriInfo.getBaseUriBuilder().replacePath("/v1/statement").path(queryId.toString()).path(String.valueOf(resultId.incrementAndGet())).replaceQuery("").build();
         }
 
-        private static List<Column> createColumnsList(QueryInfo queryInfo)
+        static List<Column> createColumnsList(QueryInfo queryInfo)
         {
             requireNonNull(queryInfo, "queryInfo is null");
             StageInfo outputStage = queryInfo.getOutputStage();
@@ -556,7 +556,7 @@ public class StatementResource
             return list.build();
         }
 
-        private static StatementStats toStatementStats(QueryInfo queryInfo)
+        static StatementStats toStatementStats(QueryInfo queryInfo)
         {
             QueryStats queryStats = queryInfo.getQueryStats();
 
@@ -633,7 +633,7 @@ public class StatementResource
             return nodes.build();
         }
 
-        private static URI findCancelableLeafStage(QueryInfo queryInfo)
+        static URI findCancelableLeafStage(QueryInfo queryInfo)
         {
             if (queryInfo.getOutputStage() == null) {
                 // query is not running yet, cannot cancel leaf stage
@@ -664,7 +664,7 @@ public class StatementResource
             return stage.getSelf();
         }
 
-        private static QueryError toQueryError(QueryInfo queryInfo)
+        static QueryError toQueryError(QueryInfo queryInfo)
         {
             FailureInfo failure = queryInfo.getFailureInfo();
             if (failure == null) {
