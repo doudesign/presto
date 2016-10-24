@@ -94,6 +94,7 @@
         <module>presto-local-file</module>
         <module>presto-tpch</module>
         <module>presto-raptor</module>
+        <module>presto-raptorx</module>
         <module>presto-base-jdbc</module>
         <module>presto-mysql</module>
         <module>presto-postgresql</module>
