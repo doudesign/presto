@@ -17,6 +17,7 @@ import org.testng.annotations.Test;
 
 import java.net.URI;
 import java.sql.SQLException;
+import java.util.Properties;
 
 import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
@@ -39,13 +40,16 @@ public class TestPrestoDriverUri
 
         // has catalog but schema is missing
         assertInvalid("jdbc:presto://localhost:8080/a//", "Schema name is empty:");
+
+        // unrecognized property
+        assertInvalid("jdbc:presto://localhost:8080/hive/default?ShoeSize=13", "Unrecognized connection property 'ShoeSize'");
     }
 
     @Test
     public void testUrlWithSsl()
             throws SQLException
     {
-        PrestoDriverUri parameters = new PrestoDriverUri("presto://some-ssl-server:443/blackhole");
+        PrestoDriverUri parameters = createDriverUri("presto://some-ssl-server:443/blackhole");
 
         URI uri = parameters.getHttpUri();
         assertEquals(uri.getPort(), 443);
@@ -56,7 +60,7 @@ public class TestPrestoDriverUri
     public void testUriWithSecureMissing()
             throws SQLException
     {
-        PrestoDriverUri parameters = new PrestoDriverUri("presto://localhost:8080/blackhole");
+        PrestoDriverUri parameters = createDriverUri("presto://localhost:8080/blackhole");
 
         URI uri = parameters.getHttpUri();
         assertEquals(uri.getPort(), 8080);
@@ -67,7 +71,7 @@ public class TestPrestoDriverUri
     public void testUriWithSecureTrue()
             throws SQLException
     {
-        PrestoDriverUri parameters = new PrestoDriverUri("presto://localhost:8080/blackhole?secure=true");
+        PrestoDriverUri parameters = createDriverUri("presto://localhost:8080/blackhole?secure=true");
 
         URI uri = parameters.getHttpUri();
         assertEquals(uri.getPort(), 8080);
@@ -78,17 +82,26 @@ public class TestPrestoDriverUri
     public void testUriWithSecureFalse()
             throws SQLException
     {
-        PrestoDriverUri parameters = new PrestoDriverUri("presto://localhost:8080/blackhole?secure=false");
+        PrestoDriverUri parameters = createDriverUri("presto://localhost:8080/blackhole?secure=false");
 
         URI uri = parameters.getHttpUri();
         assertEquals(uri.getPort(), 8080);
         assertEquals(uri.getScheme(), "http");
     }
 
+    private static PrestoDriverUri createDriverUri(String url)
+            throws SQLException
+    {
+        Properties properties = new Properties();
+        properties.setProperty("user", "test");
+
+        return new PrestoDriverUri(url, properties);
+    }
+
     private static void assertInvalid(String url, String prefix)
     {
         try {
-            new PrestoDriverUri(url);
+            createDriverUri(url);
             fail("expected exception");
         }
         catch (SQLException e) {
