@@ -19,6 +19,7 @@ import java.util.Optional;
 import java.util.Properties;
 import java.util.function.Predicate;
 
+import static com.google.common.base.Throwables.propagateIfPossible;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -28,26 +29,30 @@ abstract class AbstractConnectionProperty<T>
     private final String key;
     private final Optional<String> defaultValue;
     private final Predicate<Properties> isRequired;
+    private final Predicate<Properties> isAllowed;
     private final Converter<T> converter;
 
     protected AbstractConnectionProperty(
             String key,
             Optional<String> defaultValue,
             Predicate<Properties> isRequired,
+            Predicate<Properties> isAllowed,
             Converter<T> converter)
     {
         this.key = requireNonNull(key, "key is null");
         this.defaultValue = requireNonNull(defaultValue, "defaultValue is null");
         this.isRequired = requireNonNull(isRequired, "isRequired is null");
+        this.isAllowed = requireNonNull(isAllowed);
         this.converter = requireNonNull(converter, "converter is null");
     }
 
     protected AbstractConnectionProperty(
             String key,
             Predicate<Properties> required,
+            Predicate<Properties> allowed,
             Converter<T> converter)
     {
-        this(key, Optional.empty(), required, converter);
+        this(key, Optional.empty(), required, allowed, converter);
     }
 
     @Override
@@ -78,6 +83,12 @@ abstract class AbstractConnectionProperty<T>
     }
 
     @Override
+    public boolean isAllowed(Properties properties)
+    {
+        return !properties.containsKey(key) || isAllowed.test(properties);
+    }
+
+    @Override
     public Optional<T> getValue(Properties properties)
             throws SQLException
     {
@@ -93,6 +104,7 @@ abstract class AbstractConnectionProperty<T>
             return Optional.of(converter.convert(value));
         }
         catch (Exception e) {
+            propagateIfPossible(e, SQLException.class);
             throw new SQLException(format("Connection property '%s' value is invalid: %s", key, value), e);
         }
     }
@@ -101,16 +113,17 @@ abstract class AbstractConnectionProperty<T>
     public void validate(Properties properties)
             throws SQLException
     {
+        if (!isAllowed(properties)) {
+            throw new SQLException(format("Connection property '%s' is not allowed", key));
+        }
+
         getValue(properties);
     }
 
     protected static final Predicate<Properties> REQUIRED = properties -> true;
     protected static final Predicate<Properties> NOT_REQUIRED = properties -> false;
 
-    protected static <T> Predicate<Properties> dependsKeyValue(ConnectionProperty<T> property, T value)
-    {
-        return properties -> properties.getProperty(property.getKey()).equals(value.toString());
-    }
+    protected static final Predicate<Properties> ALLOWED = properties -> true;
 
     interface Converter<T>
     {
@@ -119,5 +132,22 @@ abstract class AbstractConnectionProperty<T>
     }
 
     protected static final Converter<String> STRING_CONVERTER = value -> value;
-    protected static final Converter<Boolean> BOOLEAN_CONVERTER = Boolean::parseBoolean;
+
+    protected interface CheckedPredicate<T>
+    {
+        boolean test(T t)
+                throws SQLException;
+    }
+
+    protected static <T> Predicate<T> checkedPredicate(CheckedPredicate<T> predicate)
+    {
+        return t -> {
+            try {
+                return predicate.test(t);
+            }
+            catch (SQLException e) {
+                return false;
+            }
+        };
+    }
 }
