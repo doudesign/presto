@@ -16,6 +16,7 @@ package com.facebook.presto.jdbc;
 import com.google.common.base.Splitter;
 import com.google.common.base.VerifyException;
 import com.google.common.net.HostAndPort;
+import okhttp3.OkHttpClient;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -81,6 +82,11 @@ final class PrestoDriverUri
     public URI getHttpUri()
     {
         return buildHttpUri();
+    }
+
+    public void setupClient(OkHttpClient.Builder builder)
+            throws SQLException
+    {
     }
 
     private static Map<String, String> parseParameters(String query)

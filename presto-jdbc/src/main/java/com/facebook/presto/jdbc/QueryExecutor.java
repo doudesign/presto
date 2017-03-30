@@ -22,21 +22,18 @@ import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 
-import java.io.Closeable;
 import java.net.URI;
 
-import static com.facebook.presto.client.OkHttpUtil.userAgent;
 import static io.airlift.json.JsonCodec.jsonCodec;
 import static java.util.Objects.requireNonNull;
 
 class QueryExecutor
-        implements Closeable
 {
     private static final JsonCodec<ServerInfo> SERVER_INFO_CODEC = jsonCodec(ServerInfo.class);
 
     private final OkHttpClient httpClient;
 
-    private QueryExecutor(OkHttpClient httpClient)
+    public QueryExecutor(OkHttpClient httpClient)
     {
         this.httpClient = requireNonNull(httpClient, "httpClient is null");
     }
@@ -44,13 +41,6 @@ class QueryExecutor
     public StatementClient startQuery(ClientSession session, String query)
     {
         return new StatementClient(httpClient, session, query);
-    }
-
-    @Override
-    public void close()
-    {
-        httpClient.dispatcher().executorService().shutdown();
-        httpClient.connectionPool().evictAll();
     }
 
     public ServerInfo getServerInfo(URI server)
@@ -62,12 +52,5 @@ class QueryExecutor
         Request request = new Request.Builder().url(url).build();
 
         return JsonResponse.execute(SERVER_INFO_CODEC, httpClient, request).getValue();
-    }
-
-    static QueryExecutor create(String userAgent)
-    {
-        return new QueryExecutor(new OkHttpClient.Builder()
-                .addInterceptor(userAgent(userAgent))
-                .build());
     }
 }
