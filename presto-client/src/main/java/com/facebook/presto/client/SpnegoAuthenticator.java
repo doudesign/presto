@@ -37,16 +37,17 @@ import javax.security.auth.login.LoginException;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
-import java.net.URI;
 import java.net.UnknownHostException;
 import java.security.Principal;
-import java.security.PrivilegedAction;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.Optional;
 
 import static com.google.common.base.CharMatcher.whitespace;
-import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Throwables.throwIfInstanceOf;
+import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.net.HttpHeaders.AUTHORIZATION;
 import static com.google.common.net.HttpHeaders.WWW_AUTHENTICATE;
 import static java.lang.Boolean.getBoolean;
@@ -107,7 +108,7 @@ public class SpnegoAuthenticator
             return null;
         }
 
-        byte[] token = generateToken(response.request().url().uri());
+        byte[] token = generateToken(response.request().url().host());
         String credential = format("%s %s", NEGOTIATE, Base64.getEncoder().encodeToString(token));
         return response.request().newBuilder()
                 .header(AUTHORIZATION, credential)
@@ -119,11 +120,12 @@ public class SpnegoAuthenticator
         return Splitter.on(whitespace()).split(value).iterator().next().equalsIgnoreCase(NEGOTIATE);
     }
 
-    private byte[] generateToken(URI uri)
+    private byte[] generateToken(String hostName)
     {
+        String servicePrincipal = makeServicePrincipal(remoteServiceName, hostName, useCanonicalHostname);
+
         GSSContext context = null;
         try {
-            String servicePrincipal = makeServicePrincipal(remoteServiceName, uri.getHost(), useCanonicalHostname);
             Session session = getSession();
             context = doAs(session.getLoginContext().getSubject(), () -> {
                 GSSContext result = GSS_MANAGER.createContext(
@@ -143,13 +145,10 @@ public class SpnegoAuthenticator
             if (token != null) {
                 return token;
             }
-            throw new RuntimeException("No token generated from GSS context for request to " + uri);
+            throw new LoginException("No token generated from GSS context");
         }
-        catch (GSSException e) {
-            throw new RuntimeException("Failed to establish GSSContext for request to " + uri, e);
-        }
-        catch (LoginException e) {
-            throw new RuntimeException("Failed to establish LoginContext for request to " + uri, e);
+        catch (GSSException | LoginException e) {
+            throw new ClientException(format("Kerberos error for [%s]: %s", servicePrincipal, e.getMessage()), e);
         }
         finally {
             try {
@@ -172,7 +171,7 @@ public class SpnegoAuthenticator
     }
 
     private Session createSession()
-            throws LoginException
+            throws LoginException, GSSException
     {
         // TODO: do we need to call logout() on the LoginContext?
 
@@ -238,11 +237,13 @@ public class SpnegoAuthenticator
             else {
                 fullHostName = address.getCanonicalHostName();
             }
-            checkState(!fullHostName.equalsIgnoreCase("localhost"), "Fully qualified name of localhost should not resolve to 'localhost'. System configuration error?");
+            if (fullHostName.equalsIgnoreCase("localhost")) {
+                throw new ClientException("Fully qualified name of localhost should not resolve to 'localhost'. System configuration error?");
+            }
             return fullHostName;
         }
         catch (UnknownHostException e) {
-            throw new RuntimeException(e);
+            throw new ClientException("Failed to resolve host: " + hostName, e);
         }
     }
 
@@ -253,15 +254,17 @@ public class SpnegoAuthenticator
     }
 
     private static <T> T doAs(Subject subject, GssSupplier<T> action)
+            throws GSSException
     {
-        return Subject.doAs(subject, (PrivilegedAction<T>) () -> {
-            try {
-                return action.get();
-            }
-            catch (GSSException e) {
-                throw new RuntimeException(e);
-            }
-        });
+        try {
+            return Subject.doAs(subject, (PrivilegedExceptionAction<T>) action::get);
+        }
+        catch (PrivilegedActionException e) {
+            Throwable t = e.getCause();
+            throwIfInstanceOf(t, GSSException.class);
+            throwIfUnchecked(t);
+            throw new RuntimeException(t);
+        }
     }
 
     private static Oid createOid(String value)

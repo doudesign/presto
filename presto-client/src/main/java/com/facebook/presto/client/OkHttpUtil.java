@@ -41,7 +41,6 @@ import java.util.Arrays;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.net.HttpHeaders.AUTHORIZATION;
 import static com.google.common.net.HttpHeaders.USER_AGENT;
 import static com.google.common.net.InetAddresses.isInetAddress;
@@ -72,8 +71,11 @@ public final class OkHttpUtil
     public static Interceptor basicAuth(String user, String password)
     {
         requireNonNull(user, "user is null");
-        checkArgument(!user.contains(":"), "Illegal character ':' found in username");
         requireNonNull(password, "password is null");
+        if (user.contains(":")) {
+            throw new ClientException("Illegal character ':' found in username");
+        }
+
         String credential = Credentials.basic(user, password);
         return chain -> chain.proceed(chain.request().newBuilder()
                 .header(AUTHORIZATION, credential)
@@ -164,7 +166,7 @@ public final class OkHttpUtil
             });
         }
         catch (GeneralSecurityException | IOException e) {
-            throw new RuntimeException(e);
+            throw new ClientException("Error setting up SSL: " + e.getMessage(), e);
         }
     }
 }

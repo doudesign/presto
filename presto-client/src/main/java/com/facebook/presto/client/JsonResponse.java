@@ -75,6 +75,11 @@ public final class JsonResponse<T>
         return statusCode;
     }
 
+    public String getStatusMessage()
+    {
+        return statusMessage;
+    }
+
     public Headers getHeaders()
     {
         return headers;

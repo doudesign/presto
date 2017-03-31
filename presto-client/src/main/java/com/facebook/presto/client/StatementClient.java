@@ -37,6 +37,7 @@ import java.net.URLEncoder;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -64,6 +65,7 @@ import static com.google.common.net.HttpHeaders.USER_AGENT;
 import static io.airlift.json.JsonCodec.jsonCodec;
 import static java.lang.String.format;
 import static java.net.HttpURLConnection.HTTP_OK;
+import static java.net.HttpURLConnection.HTTP_UNAUTHORIZED;
 import static java.net.HttpURLConnection.HTTP_UNAVAILABLE;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -347,6 +349,12 @@ public class StatementClient
     {
         gone.set(true);
         if (!response.hasValue()) {
+            if (response.getStatusCode() == HTTP_UNAUTHORIZED) {
+                return new ClientException("Authentication failed" +
+                        Optional.ofNullable(response.getStatusMessage())
+                                .map(message -> ": " + message)
+                                .orElse(""));
+            }
             return new RuntimeException(
                     format("Error %s at %s returned an invalid response: %s [Error: %s]", task, request.url(), response, response.getResponseBody()),
                     response.getException());
