@@ -34,6 +34,7 @@ final class ConnectionProperties
     public static final ConnectionProperty<String> USER = new User();
     public static final ConnectionProperty<String> PASSWORD = new Password();
     public static final ConnectionProperty<HostAndPort> SOCKS_PROXY = new SocksProxy();
+    public static final ConnectionProperty<HostAndPort> HTTP_PROXY = new HttpProxy();
     public static final ConnectionProperty<Boolean> SSL = new Ssl();
     public static final ConnectionProperty<String> SSL_TRUST_STORE_PATH = new SslTrustStorePath();
     public static final ConnectionProperty<String> SSL_TRUST_STORE_PASSWORD = new SslTrustStorePassword();
@@ -42,6 +43,7 @@ final class ConnectionProperties
             .add(USER)
             .add(PASSWORD)
             .add(SOCKS_PROXY)
+            .add(HTTP_PROXY)
             .add(SSL)
             .add(SSL_TRUST_STORE_PATH)
             .add(SSL_TRUST_STORE_PASSWORD)
@@ -107,9 +109,24 @@ final class ConnectionProperties
     private static class SocksProxy
             extends AbstractConnectionProperty<HostAndPort>
     {
+        private static final Predicate<Properties> NO_HTTP_PROXY =
+                checkedPredicate(properties -> !HTTP_PROXY.getValue(properties).isPresent());
+
         public SocksProxy()
         {
-            super("socksProxy", NOT_REQUIRED, ALLOWED, HostAndPort::fromString);
+            super("socksProxy", NOT_REQUIRED, NO_HTTP_PROXY, HostAndPort::fromString);
+        }
+    }
+
+    private static class HttpProxy
+            extends AbstractConnectionProperty<HostAndPort>
+    {
+        private static final Predicate<Properties> NO_SOCKS_PROXY =
+                checkedPredicate(properties -> !SOCKS_PROXY.getValue(properties).isPresent());
+
+        public HttpProxy()
+        {
+            super("httpProxy", NOT_REQUIRED, NO_SOCKS_PROXY, HostAndPort::fromString);
         }
     }
 

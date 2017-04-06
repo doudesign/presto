@@ -92,8 +92,18 @@ public final class OkHttpUtil
 
     public static void setupSocksProxy(OkHttpClient.Builder clientBuilder, Optional<HostAndPort> socksProxy)
     {
-        socksProxy.map(OkHttpUtil::toUnresolvedAddress)
-                .map(proxy -> new Proxy(Proxy.Type.SOCKS, proxy))
+        setupProxy(clientBuilder, socksProxy, Proxy.Type.SOCKS);
+    }
+
+    public static void setupHttpProxy(OkHttpClient.Builder clientBuilder, Optional<HostAndPort> httpProxy)
+    {
+        setupProxy(clientBuilder, httpProxy, Proxy.Type.HTTP);
+    }
+
+    public static void setupProxy(OkHttpClient.Builder clientBuilder, Optional<HostAndPort> proxy, Proxy.Type type)
+    {
+        proxy.map(OkHttpUtil::toUnresolvedAddress)
+                .map(address -> new Proxy(type, address))
                 .ifPresent(clientBuilder::proxy);
     }
 
